@@ -2,7 +2,7 @@ import discord
 import os
 import asyncio
 import logging
-import time
+import sys
 from discord.ext import commands, tasks
 from web_server import keep_alive
 import config
@@ -19,7 +19,7 @@ class MyBot(commands.Bot):
         super().__init__(
             command_prefix="!", 
             intents=intents,
-            heartbeat_timeout=60.0,  # Увеличили до 60 сек для стабильности на плохом канале
+            heartbeat_timeout=60.0,
             close_timeout=20.0
         )
 
@@ -29,12 +29,6 @@ class MyBot(commands.Bot):
         if not os.path.exists(path):
             print(f"CRITICAL ERROR: Folder '{path}' not found!")
             return
-
-        # Очистка старых расширений при жестком рестарте внутри процесса
-        for extension in list(self.extensions):
-            try:
-                await self.unload_extension(extension)
-            except: pass
 
         loaded_count = 0
         for filename in os.listdir(path):
@@ -58,7 +52,6 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         print(f"✅ Bot is logged in as {self.user} (ID: {self.user.id})")
         
-        # Запуск вочдога, если он еще не запущен
         if not self.connection_watchdog.is_running():
             self.connection_watchdog.start()
 
@@ -67,11 +60,11 @@ class MyBot(commands.Bot):
         if channel:
             embed = discord.Embed(
                 title="🤖 System Active",
-                description="The bot has reconnected and re-synced modules.",
+                description="The bot has been started by the Anti-Crash system.",
                 color=discord.Color.green(),
                 timestamp=datetime.now()
             )
-            embed.add_field(name="Status", value="`ONLINE` (Resumed)", inline=True)
+            embed.add_field(name="Status", value="`ONLINE`", inline=True)
             embed.add_field(name="Latency", value=f"`{round(self.latency * 1000)}ms`", inline=True)
             try:
                 await channel.send(embed=embed)
@@ -79,68 +72,47 @@ class MyBot(commands.Bot):
 
     @tasks.loop(minutes=3)
     async def connection_watchdog(self):
-        """Проверка на 'зависание' сессии (эффект призрака)"""
+        """Проверка на 'зависание' сессии"""
         if self.is_closed():
             return
             
-        # 1. Проверка пинга WebSocket
+        # Если пинг пропал или он слишком огромный
         if self.latency is None or self.latency > 20.0:
-            print(f"🚨 Пинг критический или отсутствует ({self.latency}). Рестарт сессии...")
-            await self.close()
-            return
+            print(f"🚨 Пинг критический ({self.latency}). Жесткий перезапуск...")
+            os._exit(1) # Убиваем процесс для внешней перезагрузки
 
-        # 2. Проверка реального ответа API (самый надежный способ)
         try:
-            # Делаем легкий запрос к API Discord, чтобы проверить реальную связь
+            # Реальный запрос к API для проверки связи
             await self.fetch_user(self.user.id)
         except Exception as e:
-            print(f"🚨 API не отвечает (Heartbeat failed): {e}. Перезагрузка...")
-            await self.close()
+            print(f"🚨 API не отвечает: {e}. Жесткий перезапуск...")
+            os._exit(1)
 
 async def run_bot():
-    """Бесконечный цикл управления объектом бота"""
-    while True:
-        bot = MyBot()
-        try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 Connecting to Discord Gateway...")
-            # Используем start() вместо run() для лучшего контроля в async среде
-            await bot.start(config.DISCORD_TOKEN, reconnect=True)
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                print("🚨 Rate Limit (429) обнаружен! Ждем 2 минуты...")
-                await asyncio.sleep(120)
-            else:
-                print(f"⚠️ HTTP Error: {e}")
-        except Exception as e:
-            print(f"⚠️ Session Loop Error: {e}")
-        finally:
-            # Гарантированное закрытие перед рестартом
-            if not bot.is_closed():
-                await bot.close()
-            
-            # Удаляем объект из памяти для чистого перезапуска
-            del bot
-            print("⏳ Restarting bot process in 30 seconds...")
-            await asyncio.sleep(30)
+    # Запуск Flask сервера
+    try:
+        keep_alive()
+    except Exception as e:
+        print(f"Flask failed: {e}")
+
+    bot = MyBot()
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 Connecting to Discord Gateway...")
+        await bot.start(config.DISCORD_TOKEN)
+    except Exception as e:
+        print(f"⚠️ Fatal Error: {e}")
+        os._exit(1) # Выход при любой фатальной ошибке
 
 if __name__ == "__main__":
     if config.DISCORD_TOKEN:
-        # Запуск Flask сервера ( keep_alive() )
         try:
-            keep_alive()
+            asyncio.run(run_bot())
+        except KeyboardInterrupt:
+            print("Stopped by user.")
+            sys.exit(0)
         except Exception as e:
-            print(f"Flask failed: {e}")
-
-        # Глобальный цикл для защиты от падения самого asyncio
-        while True:
-            try:
-                asyncio.run(run_bot())
-            except KeyboardInterrupt:
-                print("Stopped by user.")
-                break
-            except Exception as e:
-                print(f"🔥 Critical Global Failure: {e}")
-                time.sleep(20)
+            print(f"🔥 Critical Failure: {e}")
+            os._exit(1)
     else:
         print("CRITICAL ERROR: No DISCORD_TOKEN found!")
-    
+                        
