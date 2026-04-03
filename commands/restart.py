@@ -11,7 +11,7 @@ from utils import has_permission
 # Расписание строго по UTC
 RESTART_TIMES = [
     datetime.time(hour=9, minute=0, second=0),
-    datetime.time(hour=19, minute=0, second=0)
+    datetime.time(hour=21, minute=0, second=0)
 ]
 
 class Restart(commands.Cog):
