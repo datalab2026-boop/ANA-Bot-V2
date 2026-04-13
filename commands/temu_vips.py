@@ -10,7 +10,7 @@ class TemuVipCommand(commands.Cog):
         # Твой ID роли из конфига
         self.ROLE_ID = 1480292974893076491
         # ID разрешенных пользователей (из JS кода)
-        self.ALLOWED_USERS = [1344271236620091453, 1189492690522476586]
+        self.ALLOWED_USERS = [1344271236620091453, 1189492690522476586, 855164688802906142]
 
     @app_commands.command(name="temuvip", description="Manage Temu VIPs")
     @app_commands.choices(subcommand=[
