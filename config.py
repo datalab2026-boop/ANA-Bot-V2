@@ -6,35 +6,50 @@ ROBLOX_API_KEY = os.environ.get("Apitoken")
 RESTART_TOKEN = os.environ.get("Restarttoken")
 
 # Настройки каналов и ролей
-GROUP_ID = 841435331
-ALLOWED_ROLE_ID = 1479884336051388604  # ID роли в Discord, которой можно юзать команды
-LOG_CHANNEL_ID = 1481718190961590392
+GROUP_ID = 79507695
+ALLOWED_ROLE_ID = 1467991343468118170  # ID роли в Discord
+LOG_CHANNEL_ID = 1467475314086117459
 
 # Словари рангов
 ROLE_IDS = {
-    "Guest": 601712008,
-    "『SR』Seaman Recruit": 627311089,
-    "『SA』Seaman Apprentice": 626371120,
-    "『SM』Seaman": 625449142,
-    "『SS』Senior Seaman": 626739123,
-    "『PO』Petty Officer": 625591116,
-    "『CPO』Chief Petty Officer": 625249228,
-    "『SC』Senior Chief": 626151118,
-    "『MC』Master Chief": 621855265,
-    "『DEV』Developer": 601712009,
-    "『OOT』Officer On Trial": 625687178,
-    "『ENS』Ensign": 626819052,
-    "『LT』Lieutenant": 626001157,
-    "『COM』Commodore": 625657188,
-    "『CAPT』Captain": 625233175,
-    "『FCDR』Fleet Commande": 601712006,
-    "Admiral": 601712007
+    "Guest": 553192051,
+    "Member": 12884901889,
+    "[C] Cadet": 593902054,
+    "[AR] Airman Recruit": 595344014,
+    "[JA] Junior Airman": 595748001,
+    "[AMN] Airman": 594658030,
+    "[SA] Senior Airman": 594682030,
+    "[COR] Corporal": 594658029,
+    "[SCO] Senior Corporal": 593596019,
+    "[JFS] Junior Flight Sergeant": 594976023,
+    "[FS] Flight Sergeant": 592992043,
+    "[CFS] Chief Flight Sergeant": 592808034,
+    "[TO] Trainee Officer": 595150017,
+    "[LTJ] Lieutenant Junior": 595324015,
+    "[FL] Flight Lieutenant": 593270049,
+    "[WC] Wing Commander": 595324014,
+    "[SWC] Senior Wing Commander": 592880031,
+    "[AM] Air Marshal": 595566023,
+    "[CAM] Chief Air Marshal": 592622025,
+    "[DEV] Developer": 553100075,
+    "[CR] Chief Recruiter": 594188044,
+    "[CH] Chief Hoster": 593786039,
+    "[BOT] Bot": 552360083,
+    "[VSM] Vice Sky Major": 553496092,
+    "[SM] Sky Major": 553922096,
+    "[VSC] Vice Sky Chief": 553674100,
+    "[SC] Sky Chief": 552360145,
+    "[DAC] Deputy Aerial Commander": 553518076,
+    "[AC] Aerial Commander": 553066065
 }
 
 VALID_ROLES = [
-    "『SR』Seaman Recruit", "『SA』Seaman Apprentice", "『SM』Seaman", 
-    "『SS』Senior Seaman", "『PO』Petty Officer", "『CPO』Chief Petty Officer",
-    "『SC』Senior Chief", "『MC』Master Chief", "『DEV』Developer",
-    "『OOT』Officer On Trial", "『ENS』Ensign", "『LT』Lieutenant",
-    "『COM』Commodore", "『CAPT』Captain", "『FCDR』Fleet Commande"
+    "[C] Cadet", "[AR] Airman Recruit", "[JA] Junior Airman", 
+    "[AMN] Airman", "[SA] Senior Airman", "[COR] Corporal", 
+    "[SCO] Senior Corporal", "[JFS] Junior Flight Sergeant", 
+    "[FS] Flight Sergeant", "[CFS] Chief Flight Sergeant", 
+    "[TO] Trainee Officer", "[LTJ] Lieutenant Junior", 
+    "[FL] Flight Lieutenant", "[WC] Wing Commander", 
+    "[SWC] Senior Wing Commander", "[AM] Air Marshal", 
+    "[CAM] Chief Air Marshal"
 ]
