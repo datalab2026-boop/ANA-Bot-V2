@@ -3,19 +3,26 @@ import os
 import asyncio
 import logging
 import sys
+import traceback
 from discord.ext import commands, tasks
 from web_server import keep_alive
 import config
 from datetime import datetime
 
-# Настройка логирования для Render
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования (Render будет подхватывать эти логи)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s % (levelname)s:%(name)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger('discord_bot')
 
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True 
+        intents.members = True # Убедись, что это включено в Discord Developer Portal
+        
         super().__init__(
             command_prefix="!", 
             intents=intents,
@@ -24,95 +31,109 @@ class MyBot(commands.Bot):
         )
 
     async def setup_hook(self):
-        print("\n=== STARTING MODULE LOADING ===")
+        print("\n=== [1] LOADING MODULES ===")
         path = './commands'
         if not os.path.exists(path):
-            print(f"CRITICAL ERROR: Folder '{path}' not found!")
-            return
+            print(f"❌ CRITICAL: Folder '{path}' not found! Creating it...")
+            os.makedirs(path, exist_ok=True)
 
         loaded_count = 0
         for filename in os.listdir(path):
             if filename.endswith('.py') and filename != '__init__.py':
                 try:
                     await self.load_extension(f'commands.{filename[:-3]}')
-                    print(f"✅ Loaded extension: {filename}")
+                    print(f"✅ Loaded: {filename}")
                     loaded_count += 1
                 except Exception as e:
-                    print(f"❌ Failed to load {filename}: {e}")
+                    print(f"❌ Failed {filename}: {e}")
+                    traceback.print_exc()
         
-        print(f"Total modules loaded: {loaded_count}")
+        print(f"Total: {loaded_count} modules.")
         
-        print("=== SYNCING SLASH COMMANDS ===")
+        print("\n=== [2] SYNCING SLASH COMMANDS ===")
         try:
             synced = await self.tree.sync()
-            print(f"✅ Successfully synced {len(synced)} slash commands.")
+            print(f"✅ Synced {len(synced)} commands.")
         except Exception as e:
-            print(f"❌ Failed to sync slash commands: {e}")
+            print(f"❌ Sync failed: {e}")
 
     async def on_ready(self):
-        print(f"✅ Bot is logged in as {self.user} (ID: {self.user.id})")
+        print(f"\n🚀 LOGGED IN AS: {self.user} (ID: {self.user.id})")
+        print(f"Status: ONLINE | Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         if not self.connection_watchdog.is_running():
             self.connection_watchdog.start()
 
-        # Лог активации в канал
-        channel = self.get_channel(config.LOG_CHANNEL_ID)
-        if channel:
-            embed = discord.Embed(
-                title="🤖 System Active",
-                description="The bot has been started by the Anti-Crash system.",
-                color=discord.Color.green(),
-                timestamp=datetime.now()
-            )
-            embed.add_field(name="Status", value="`ONLINE`", inline=True)
-            embed.add_field(name="Latency", value=f"`{round(self.latency * 1000)}ms`", inline=True)
-            try:
+        # Отправка лога в канал (если ID верный)
+        try:
+            channel = self.get_channel(int(config.LOG_CHANNEL_ID))
+            if channel:
+                embed = discord.Embed(
+                    title="🤖 System Status: ONLINE",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Latency", value=f"`{round(self.latency * 1000)}ms`")
                 await channel.send(embed=embed)
-            except: pass
+        except Exception as e:
+            print(f"⚠️ Could not send log to Discord channel: {e}")
 
-    @tasks.loop(minutes=3)
+    @tasks.loop(minutes=5)
     async def connection_watchdog(self):
-        """Проверка на 'зависание' сессии"""
+        """Проверка на зависание. Смягчена, чтобы не было ложных срабатываний."""
         if self.is_closed():
             return
             
-        # Если пинг пропал или он слишком огромный
-        if self.latency is None or self.latency > 20.0:
-            print(f"🚨 Пинг критический ({self.latency}). Жесткий перезапуск...")
-            os._exit(1) # Убиваем процесс для внешней перезагрузки
-
-        try:
-            # Реальный запрос к API для проверки связи
-            await self.fetch_user(self.user.id)
-        except Exception as e:
-            print(f"🚨 API не отвечает: {e}. Жесткий перезапуск...")
-            os._exit(1)
+        # Даем боту фору. Если латентность None — он еще просыпается.
+        if self.latency is not None:
+            # Если пинг более 30 секунд (бот явно висит)
+            if self.latency > 30.0:
+                print(f"🚨 CRITICAL LATENCY: {self.latency}s. Rebooting...")
+                os._exit(1)
+            
+            try:
+                # Быстрая проверка связи с API
+                await self.fetch_user(self.user.id)
+            except Exception as e:
+                print(f"🚨 API Unreachable: {e}. Rebooting...")
+                os._exit(1)
 
 async def run_bot():
-    # Запуск Flask сервера
+    # 1. Запуск Flask (веб-сервера для Render)
+    print("🌐 Starting Flask keep-alive server...")
     try:
         keep_alive()
     except Exception as e:
-        print(f"Flask failed: {e}")
+        print(f"❌ Flask failed to start: {e}")
 
+    # 2. Инициализация и запуск бота
     bot = MyBot()
+    
+    token = getattr(config, 'DISCORD_TOKEN', None) or os.environ.get('DISCORD_TOKEN')
+    
+    if not token:
+        print("❌ ERROR: No DISCORD_TOKEN found in config.py or Environment Variables!")
+        return
+
     try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 Connecting to Discord Gateway...")
-        await bot.start(config.DISCORD_TOKEN)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 Connecting to Discord...")
+        await bot.start(token)
+    except discord.LoginFailure:
+        print("❌ FATAL: Invalid Discord Token! Check your config/env.")
     except Exception as e:
-        print(f"⚠️ Fatal Error: {e}")
-        os._exit(1) # Выход при любой фатальной ошибке
+        print(f"⚠️ Fatal Connection Error: {e}")
+        traceback.print_exc()
+    finally:
+        os._exit(1) # Всегда выходим со статусом 1 при падении, чтобы Render перезапустил бота
 
 if __name__ == "__main__":
-    if config.DISCORD_TOKEN:
-        try:
-            asyncio.run(run_bot())
-        except KeyboardInterrupt:
-            print("Stopped by user.")
-            sys.exit(0)
-        except Exception as e:
-            print(f"🔥 Critical Failure: {e}")
-            os._exit(1)
-    else:
-        print("CRITICAL ERROR: No DISCORD_TOKEN found!")
-                        
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("🛑 Shutdown requested by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"🔥 UNCAUGHT FATAL ERROR: {e}")
+        traceback.print_exc()
+        os._exit(1)
+        
