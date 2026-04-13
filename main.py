@@ -63,7 +63,7 @@ class MyBot(commands.Bot):
             self.connection_watchdog.start()
 
         # Лог активации в канал
-        channel = self.get_channel(config.LOG_CHANNEL_ID)
+        channel = self.get_channel(config.ERROR_CHANNEL_ID)
         if channel:
             embed = discord.Embed(
                 title="🤖 System Active",
