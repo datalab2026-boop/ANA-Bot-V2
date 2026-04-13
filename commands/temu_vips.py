@@ -7,47 +7,69 @@ import os
 class TemuVipCommand(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Твой ID роли из конфига
+        self.ROLE_ID = 1480292974893076491
+        # ID разрешенных пользователей (из JS кода)
+        self.ALLOWED_USERS = [1344271236620091453, 1189492690522476586]
 
-    @app_commands.command(name="temuvips", description="Temu VIPs list")
-    async def temuvip(self, interaction: discord.Interaction):
-        # ЗАМЕНИ ЭТОТ ID НА СВОЙ
-        ROLE_ID = 1480292974893076491
-        
-        role = interaction.guild.get_role(ROLE_ID)
-        
-        if not role:
-            await interaction.response.send_message(
-                f"❌ Роль с ID `{ROLE_ID}` не найдена.", 
-                ephemeral=True
-            )
+    @app_commands.command(name="temuvip", description="Manage Temu VIPs")
+    @app_commands.choices(subcommand=[
+        app_commands.Choice(name="list", value="list"),
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="remove", value="remove")
+    ])
+    @app_commands.describe(user="User to add or remove")
+    async def temuvip(self, interaction: discord.Interaction, subcommand: str, user: discord.Member = None):
+        # 1. Проверка прав (как в JS)
+        if interaction.user.id not in self.ALLOWED_USERS:
+            await interaction.response.send_message("You do not have permission to use this command!", ephemeral=True)
             return
 
-        # Собираем список участников с этой ролью
-        members = role.members
-        
-        if not members:
-            description = "В данном списке пока пусто."
-        else:
-            # Формируем список. Используем mention, чтобы в ембеде были кликабельные ники
-            # Ограничение 40 человек, чтобы не вылезти за лимиты Discord по символам
-            member_mentions = [m.mention for m in members[:40]]
-            description = "\n".join(member_mentions)
+        role = interaction.guild.get_role(self.ROLE_ID)
+
+        if not role:
+            await interaction.response.send_message(f"Temu VIP role not found. Admin will fix it.", ephemeral=True)
+            return
+
+        # 2. Логика подкоманд
+        if subcommand == "list":
+            # ВАЖНО: Принудительно загружаем участников, чтобы role.members не был пустым
+            # Это аналог того, почему у JS кода может работать, а у Python - нет
+            await interaction.guild.chunk() 
             
+            members = role.members
+            if not members:
+                await interaction.response.send_message("There are no Temu VIP's!", ephemeral=False)
+                return
+
+            description = "**Temu VIPs:**\n" + "\n".join([m.mention for m in members[:40]])
             if len(members) > 40:
-                description += f"\n\n*...и еще {len(members) - 40} участников.*"
+                description += f"\n\n*...and {len(members) - 40} more.*"
 
-        embed = discord.Embed(
-            title=f"👑 Temu VIPs: {role.name}",
-            description=description,
-            color=role.color, # Цвет берется из настроек самой роли
-            timestamp=datetime.datetime.now(datetime.timezone.utc)
-        )
+            embed = discord.Embed(title="👑 Temu VIP List", description=description, color=discord.Color.red())
+            await interaction.response.send_message(embed=embed)
 
-        embed.add_field(name="Total Temu VIPs:", value=f"**{len(members)}**", inline=True)
-        embed.set_footer(text=f"Server ID: {interaction.guild.id} | PID: {os.getpid()}")
+        elif subcommand == "add":
+            if not user:
+                await interaction.response.send_message("Please specify a user!", ephemeral=True)
+                return
+            
+            if role in user.roles:
+                await interaction.response.send_message(f"{user.mention} is already a Temu VIP.", ephemeral=False)
+            else:
+                await user.add_roles(role)
+                await interaction.response.send_message(f"✅ {user.mention} is now a Temu VIP.", ephemeral=False)
 
-        # Отправляем сообщение всем (ephemeral=False)
-        await interaction.response.send_message(embed=embed)
+        elif subcommand == "remove":
+            if not user:
+                await interaction.response.send_message("Please specify a user!", ephemeral=True)
+                return
+
+            if role not in user.roles:
+                await interaction.response.send_message(f"{user.mention} is not a Temu VIP.", ephemeral=False)
+            else:
+                await user.remove_roles(role)
+                await interaction.response.send_message(f"❌ {user.mention} is now no longer a Temu VIP.", ephemeral=False)
 
 async def setup(bot):
     await bot.add_cog(TemuVipCommand(bot))
