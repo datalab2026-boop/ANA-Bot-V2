@@ -41,7 +41,7 @@ class Restart(commands.Cog):
     # --- Автоматизация (10:00 и 22:00 UTC) ---
     @tasks.loop(time=RESTART_TIMES)
     async def scheduled_restart(self):
-        channel = self.bot.get_channel(config.LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(config.ERROR_CHANNEL_ID)
         if channel:
             embed = discord.Embed(
                 title="🔄 Scheduled Maintenance",
@@ -49,7 +49,7 @@ class Restart(commands.Cog):
                 color=discord.Color.orange(),
                 timestamp=datetime.datetime.now()
             )
-            embed.add_field(name="Schedule", value="`10:00 / 22:00 UTC`", inline=True)
+            embed.add_field(name="Schedule", value="`9:00 / 21:00 UTC`", inline=True)
             try:
                 await channel.send(embed=embed)
             except: pass
