@@ -1,13 +1,14 @@
 import discord
 from discord.ext import tasks, commands
 import requests
+import asyncio
 from datetime import datetime, timezone
 import config
 
 class AltDetector(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.last_top_user_id = None # ID самого верхнего юзера из прошлой проверки
+        self.last_top_user_id = None  # ID самого верхнего пользователя
         self.is_initialized = False
         
         self.GROUP_ID = config.GROUP_ID
@@ -19,7 +20,7 @@ class AltDetector(commands.Cog):
 
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
-            382537569, 1772336109, 4047884939
+            382537569, 1772336109, 4047884939, 10638267973, 10647852134
         ]
         
         self.check_loop.start()
@@ -32,7 +33,7 @@ class AltDetector(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            # Получаем список. Новые всегда в начале (data[0])
+            # Получаем список участников (новые сверху)
             url = f"https://groups.roblox.com/v1/groups/{self.GROUP_ID}/users?sortOrder=Desc&limit=50"
             response = requests.get(url, headers=self.headers, timeout=10)
             
@@ -43,16 +44,14 @@ class AltDetector(commands.Cog):
             if not data:
                 return
 
-            current_members_to_check = []
+            members_to_check = []
 
             if not self.is_initialized:
-                # ПЕРВЫЙ ЗАПУСК: берем 5 самых верхних
-                # Идем с конца (с 5-го к 1-му), чтобы лог был хронологическим
-                current_members_to_check = list(reversed(data[:5]))
+                # ПРИ СТАРТЕ: Берем 5 самых верхних
+                members_to_check = list(reversed(data[:5]))
                 self.is_initialized = True
             else:
-                # ПОСЛЕДУЮЩИЕ ПРОВЕРКИ:
-                # Ищем, где в новом списке находится наш старый "якорь"
+                # ПОСЛЕ РЕСТАРТА: Ищем позицию прошлого "самого верхнего"
                 found_anchor_index = -1
                 for i, member in enumerate(data):
                     if member['user']['userId'] == self.last_top_user_id:
@@ -60,59 +59,81 @@ class AltDetector(commands.Cog):
                         break
                 
                 if found_anchor_index == -1:
-                    # Если старый якорь не найден (ушел слишком далеко вниз или список сильно обновился)
-                    # Чтобы не спамить, просто берем только самого первого (нового)
-                    current_members_to_check = [data[0]]
+                    # Если старый топ не найден, проверяем только самого нового
+                    members_to_check = [data[0]]
                 else:
-                    # Все, кто имеет индекс меньше найденного якоря — это новые люди
-                    # (т.е. они стоят выше него в списке)
-                    new_people = data[0:found_anchor_index]
-                    current_members_to_check = list(reversed(new_people))
+                    # Берем всех, кто выше него в списке (индексы от 0 до anchor)
+                    new_entries = data[0:found_anchor_index]
+                    members_to_check = list(reversed(new_entries))
 
-            # Проверяем отобранных кандидатов
-            for member in current_members_to_check:
+            for member in members_to_check:
                 rbx_id = member['user']['userId']
                 username = member['user']['username']
                 
                 risk_data = self.perform_risk_check(rbx_id)
                 if risk_data:
+                    # Передаем дату вступления в группу, если она есть
                     group_join = member.get('created', 'Unknown')
                     risk_data['group_join'] = group_join[:10] if group_join != 'Unknown' else 'N/A'
                     await self.send_report(username, rbx_id, risk_data)
 
-            # В конце каждой итерации обновляем "якорь" на самого верхнего из списка
+            # Обновляем "якорь" самого верхнего
             self.last_top_user_id = data[0]['user']['userId']
 
         except Exception as e:
             await self.log_error(f"Loop error: {str(e)}")
 
     def perform_risk_check(self, rbx_id):
-        # ... (Логика проверки риска остается прежней) ...
         risk = 0
         reasons = []
         try:
+            # Твоя оригинальная логика рисков
             u_info = requests.get(f"https://users.roblox.com/v1/users/{rbx_id}").json()
             f_info = requests.get(f"https://friends.roblox.com/v1/users/{rbx_id}/friends/count").json()
+            b_info = requests.get(f"https://badges.roblox.com/v1/users/{rbx_id}/badges?limit=10").json()
             a_info = requests.get(f"https://avatar.roblox.com/v1/users/{rbx_id}/avatar").json()
 
             results = {}
             
+            # Возраст профиля
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
                 age_days = (datetime.now(timezone.utc) - created_dt).days
                 results['age_days'] = age_days
                 results['join_date'] = created_str[:10]
-                if age_days < 30: 
-                    risk += 50
-                    reasons.append(f"New account ({age_days}d)")
+                
+                if age_days < 14: risk += 60; reasons.append("Account age < 2 weeks")
+                elif age_days < 30: risk += 25; reasons.append("Account age < 1 month")
+                elif age_days < 90: risk += 10; reasons.append("Account age < 3 months")
             
-            friends = f_info.get('count', 0)
-            if friends < 5:
-                risk += 30
-                reasons.append("Few friends")
+            # Аватар
+            equipped = a_info.get('assets', [])
+            ignored_types = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
+            clothing_ids = [str(a.get('id')) for a in equipped if a.get('assetType', {}).get('name') not in ignored_types]
+            
+            if clothing_ids:
+                matches = sum(1 for item_id in clothing_ids if int(item_id) in self.STARTER_ASSET_IDS)
+                match_percent = (matches / len(clothing_ids)) * 100
+                if match_percent >= 75: 
+                    risk += 35
+                    reasons.append(f"Starter items match ({round(match_percent)}%)")
+                results['clothing_list'] = ", ".join(clothing_ids)
+            else:
+                risk += 30; reasons.append("Empty avatar"); results['clothing_list'] = "None"
 
-            results['reasons'] = ", ".join(reasons) if reasons else "Clean"
+            # Друзья
+            friends = f_info.get('count', 0)
+            results['friends'] = friends
+            if friends < 5: risk += 40; reasons.append("Extremely low friends (<5)")
+            elif friends < 20: risk += 10; reasons.append("Low friends (<20)")
+
+            # Бейджи
+            badges = b_info.get('data', [])
+            if not b_info.get('nextPageCursor') and len(badges) < 5:
+                risk += 15; reasons.append("Lack of badges")
+
+            results['reasons'] = ", ".join(reasons) if reasons else "None"
             results['total_risk'] = min(risk, 100)
             return results
         except:
@@ -121,21 +142,25 @@ class AltDetector(commands.Cog):
     async def send_report(self, username, rbx_id, data):
         channel = self.bot.get_channel(self.REPORT_CHANNEL_ID)
         if not channel: return
-        
-        embed = discord.Embed(
-            title=f"🔎 AltDetector: {username}", 
-            description=f"Risk Score: **{data['total_risk']}%**",
-            color=discord.Color.orange()
-        )
-        embed.add_field(name="Profile", value=f"[Link](https://www.roblox.com/users/{rbx_id}/profile)")
-        embed.add_field(name="Reasons", value=data['reasons'])
+
+        risk = data['total_risk']
+        color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
+
+        # ВОЗВРАЩЕНО ТВОЕ МЕНЮ
+        embed = discord.Embed(title=f"🛡️ AltDetector Checkup", color=color)
+        embed.add_field(name="Username:", value=f"**{username}**", inline=True)
+        embed.add_field(name="User ID:", value=f"`{rbx_id}`", inline=True)
+        embed.add_field(name="Roblox join:", value=f"{data['join_date']} ({data['age_days']} days)", inline=False)
+        embed.add_field(name="Risk:", value=f"**{risk}%**", inline=True)
+        embed.add_field(name="Reason:", value=data['reasons'], inline=False)
+
         await channel.send(embed=embed)
 
     async def log_error(self, error_msg):
         channel = self.bot.get_channel(self.ERROR_CHANNEL_ID)
         if channel:
-            await channel.send(f"⚠️ **AltDetector Error**: {error_msg}")
+            await channel.send(f"❌ **System Error (AltDetector)**: {error_msg}")
 
 async def setup(bot):
     await bot.add_cog(AltDetector(bot))
-      
+    
