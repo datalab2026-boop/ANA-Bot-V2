@@ -12,7 +12,7 @@ class AltDetector(commands.Cog):
         self.last_top_user_id = None
         self.is_initialized = False
         
-        # Конфиг
+        # Config
         self.GROUP_ID = config.GROUP_ID
         self.CLOUD_API = config.ROBLOX_API_KEY
         self.headers = {"x-api-key": self.CLOUD_API}
@@ -24,7 +24,8 @@ class AltDetector(commands.Cog):
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
             382537569, 1772336109, 4047884939, 63690008, 86500008, 
-            86500036, 86500054, 86500064, 86500078, 144076358, 144076760
+            86500036, 86500054, 86500064, 86500078, 144076358, 144076760,
+            10638267973, 10647852134
         ]
         
         self.check_loop.start()
@@ -32,11 +33,10 @@ class AltDetector(commands.Cog):
     def cog_unload(self):
         self.check_loop.cancel()
 
-    # --- SLASH-КОМАНДА ДЛЯ РУЧНОЙ ПРОВЕРКИ ---
-    @app_commands.command(name="check", description="Проверить игрока на наличие альт-аккаунта (по ID или нику)")
-    @app_commands.describe(user="Введите ID игрока или его никнейм")
+    # --- MANUAL CHECK SLASH COMMAND ---
+    @app_commands.command(name="check", description="Check a player for alt-account risk (by ID or Username)")
+    @app_commands.describe(user="Enter Roblox User ID or Username")
     async def manual_check(self, interaction: discord.Interaction, user: str):
-        # Отвечаем "бот думает", так как запросы к API занимают время
         await interaction.response.defer(thinking=True)
         
         rbx_id = None
@@ -51,29 +51,28 @@ class AltDetector(commands.Cog):
                 if user_res.get('data'):
                     rbx_id = user_res['data'][0]['id']
             except Exception as e:
-                return await interaction.followup.send(f"❌ Ошибка API: {e}")
+                return await interaction.followup.send(f"❌ API Error: {e}")
 
         if not rbx_id:
-            return await interaction.followup.send(f"❌ Пользователь `{user}` не найден в Roblox.")
+            return await interaction.followup.send(f"❌ User `{user}` not found on Roblox.")
 
         risk_data = self.perform_risk_check(rbx_id)
         if risk_data:
-            # Создаем эмбед
             risk = risk_data['total_risk']
             color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
             
-            embed = discord.Embed(title="🛡️ AltDetector: Ручная проверка", color=color)
+            embed = discord.Embed(title="🛡️ AltDetector: Manual Check", color=color)
             embed.add_field(name="Username:", value=f"**{risk_data['username']}**", inline=True)
             embed.add_field(name="User ID:", value=f"`{rbx_id}`", inline=True)
-            embed.add_field(name="Roblox join:", value=f"{risk_data.get('join_date', 'N/A')} ({risk_data.get('age_days', '?')} дней)", inline=False)
-            embed.add_field(name="Риск:", value=f"**{risk}%**", inline=True)
-            embed.add_field(name="Причины:", value=risk_data['reasons'], inline=False)
+            embed.add_field(name="Roblox join:", value=f"{risk_data.get('join_date', 'N/A')} ({risk_data.get('age_days', '?')} days)", inline=False)
+            embed.add_field(name="Risk Score:", value=f"**{risk}%**", inline=True)
+            embed.add_field(name="Reasons:", value=risk_data['reasons'], inline=False)
             
             await interaction.followup.send(embed=embed)
         else:
-            await interaction.followup.send("❌ Не удалось получить данные игрока.")
+            await interaction.followup.send("❌ Failed to fetch player data.")
 
-    # --- АВТОМАТИЧЕСКИЙ ЦИКЛ ---
+    # --- AUTOMATIC LOOP ---
     @tasks.loop(seconds=60)
     async def check_loop(self):
         await self.bot.wait_until_ready()
@@ -104,11 +103,12 @@ class AltDetector(commands.Cog):
 
             for member in members_to_check:
                 rbx_id = member.get('userId')
+                username = member.get('username')
                 if not rbx_id: continue
 
                 risk_data = self.perform_risk_check(rbx_id)
                 if risk_data:
-                    await self.send_auto_report(risk_data['username'], rbx_id, risk_data)
+                    await self.send_auto_report(username, rbx_id, risk_data)
 
             if data:
                 self.last_top_user_id = data[0].get('userId')
@@ -127,33 +127,43 @@ class AltDetector(commands.Cog):
 
             results = {'username': u_info.get('name', 'Unknown')}
             
-            # Логика возраста
+            # Account Age Logic
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
                 age_days = (datetime.now(timezone.utc) - created_dt).days
                 results['age_days'] = age_days
                 results['join_date'] = created_str[:10]
-                if age_days < 14: risk += 60; reasons.append("Возраст < 2 недель")
-                elif age_days < 30: risk += 25; reasons.append("Возраст < 1 месяца")
+                
+                if age_days < 14: risk += 60; reasons.append("Account age < 2 weeks")
+                elif age_days < 30: risk += 25; reasons.append("Account age < 1 month")
+                elif age_days < 90: risk += 10; reasons.append("Account age < 3 months")
             
-            # Логика аватара
+            # Avatar Logic
             equipped = a_info.get('assets', [])
             ignored_types = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
             clothing_ids = [str(a.get('id')) for a in equipped if a.get('assetType', {}).get('name') not in ignored_types]
             
             if clothing_ids:
                 matches = sum(1 for item_id in clothing_ids if int(item_id) in self.STARTER_ASSET_IDS)
-                if (matches / len(clothing_ids)) * 100 >= 75: 
-                    risk += 35; reasons.append("Стандартные вещи аватара")
+                match_percent = (matches / len(clothing_ids)) * 100
+                if match_percent >= 75: 
+                    risk += 35
+                    reasons.append(f"Starter items match ({round(match_percent)}%)")
             else:
-                risk += 30; reasons.append("Пустой аватар")
+                risk += 30; reasons.append("Empty avatar (No assets)")
 
-            # Друзья и Бейджи
-            if f_info.get('count', 0) < 5: risk += 40; reasons.append("Мало друзей (<5)")
-            if len(b_info.get('data', [])) < 5: risk += 15; reasons.append("Мало бейджей")
+            # Friends Logic
+            friends = f_info.get('count', 0)
+            if friends < 5: risk += 40; reasons.append("Extremely low friends (<5)")
+            elif friends < 20: risk += 10; reasons.append("Low friends (<20)")
 
-            results['reasons'] = ", ".join(reasons) if reasons else "Нет подозрений"
+            # Badges Logic
+            badges = b_info.get('data', [])
+            if not b_info.get('nextPageCursor') and len(badges) < 5:
+                risk += 15; reasons.append("Lack of badges")
+
+            results['reasons'] = ", ".join(reasons) if reasons else "None"
             results['total_risk'] = min(risk, 100)
             return results
         except:
@@ -166,16 +176,18 @@ class AltDetector(commands.Cog):
         risk = data['total_risk']
         color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
         
-        embed = discord.Embed(title="🛡️ AltDetector: Новый участник", color=color)
-        embed.add_field(name="User:", value=f"**{username}** (`{rbx_id}`)", inline=False)
-        embed.add_field(name="Риск:", value=f"**{risk}%**", inline=True)
-        embed.add_field(name="Причины:", value=data['reasons'], inline=False)
+        embed = discord.Embed(title="🛡️ AltDetector: New Member", color=color)
+        embed.add_field(name="Username:", value=f"**{username}**", inline=True)
+        embed.add_field(name="User ID:", value=f"`{rbx_id}`", inline=True)
+        embed.add_field(name="Roblox join:", value=f"{data['join_date']} ({data['age_days']} days)", inline=False)
+        embed.add_field(name="Risk Score:", value=f"**{risk}%**", inline=True)
+        embed.add_field(name="Reasons:", value=data['reasons'], inline=False)
         await channel.send(embed=embed)
 
     async def log_error(self, error_msg):
         channel = self.bot.get_channel(self.ERROR_CHANNEL_ID)
-        if channel: await channel.send(f"❌ **System Error**: {error_msg}")
+        if channel: await channel.send(f"❌ **System Error (AltDetector)**: {error_msg}")
 
 async def setup(bot):
     await bot.add_cog(AltDetector(bot))
-                    
+            
