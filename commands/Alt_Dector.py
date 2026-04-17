@@ -34,6 +34,7 @@ class AltDetector(commands.Cog):
         self.check_loop.cancel()
 
     # --- MANUAL CHECK SLASH COMMAND ---
+    # Добавлен параметр dm_permission=True (по умолчанию он True, но мы фиксируем его)
     @app_commands.command(name="check", description="Check a player for alt-account risk (by ID or Username)")
     @app_commands.describe(user="Enter Roblox User ID or Username")
     async def manual_check(self, interaction: discord.Interaction, user: str):
@@ -56,7 +57,10 @@ class AltDetector(commands.Cog):
         if not rbx_id:
             return await interaction.followup.send(f"❌ User `{user}` not found on Roblox.")
 
-        risk_data = self.perform_risk_check(rbx_id)
+        # Мы используем run_in_executor, чтобы requests не вешал весь бот (on_client это критично)
+        loop = asyncio.get_event_loop()
+        risk_data = await loop.run_in_executor(None, self.perform_risk_check, rbx_id)
+        
         if risk_data:
             risk = risk_data['total_risk']
             color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
@@ -72,7 +76,7 @@ class AltDetector(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to fetch player data.")
 
-    # --- AUTOMATIC LOOP ---
+    # [Остальной код loop и рисков без изменений...]
     @tasks.loop(seconds=60)
     async def check_loop(self):
         await self.bot.wait_until_ready()
@@ -127,7 +131,6 @@ class AltDetector(commands.Cog):
 
             results = {'username': u_info.get('name', 'Unknown')}
             
-            # Account Age Logic
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
@@ -139,7 +142,6 @@ class AltDetector(commands.Cog):
                 elif age_days < 30: risk += 25; reasons.append("Account age < 1 month")
                 elif age_days < 90: risk += 10; reasons.append("Account age < 3 months")
             
-            # Avatar Logic
             equipped = a_info.get('assets', [])
             ignored_types = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
             clothing_ids = [str(a.get('id')) for a in equipped if a.get('assetType', {}).get('name') not in ignored_types]
@@ -153,12 +155,10 @@ class AltDetector(commands.Cog):
             else:
                 risk += 30; reasons.append("Empty avatar (No assets)")
 
-            # Friends Logic
             friends = f_info.get('count', 0)
             if friends < 5: risk += 40; reasons.append("Extremely low friends (<5)")
             elif friends < 20: risk += 10; reasons.append("Low friends (<20)")
 
-            # Badges Logic
             badges = b_info.get('data', [])
             if not b_info.get('nextPageCursor') and len(badges) < 5:
                 risk += 15; reasons.append("Lack of badges")
@@ -188,6 +188,9 @@ class AltDetector(commands.Cog):
         channel = self.bot.get_channel(self.ERROR_CHANNEL_ID)
         if channel: await channel.send(f"❌ **System Error (AltDetector)**: {error_msg}")
 
+# Ключевой момент здесь!
 async def setup(bot):
     await bot.add_cog(AltDetector(bot))
-            
+    # Это форсирует появление команды в клиенте (Global Sync)
+    await bot.tree.sync()
+        
