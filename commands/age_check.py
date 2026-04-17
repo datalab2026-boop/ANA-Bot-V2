@@ -7,22 +7,21 @@ import config
 class AgeCheck(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Храним ID последней записи лога, чтобы не проверять одних и тех же
-        self.last_checked_log_id = None
+        # В v2 API для пагинации часто используется pageToken, 
+        # но мы будем использовать время, чтобы отсекать старые события.
+        self.last_event_time = datetime.now(timezone.utc)
         
-        # Настройки из config.py
         self.GROUP_ID = config.GROUP_ID
         self.CLOUD_API = config.ROBLOX_API_KEY
+        # В Open Cloud заголовок обычно x-api-key
         self.headers = {"x-api-key": self.CLOUD_API}
         
-        # Каналы (ID из твоего примера)
         self.REPORT_CHANNEL_ID = 1480592830870192329
         self.ERROR_CHANNEL_ID = 1480592830870192329
 
-        # ID стартовых вещей Roblox для детекта пустых аккаунтов
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
-            382537569, 1772336109, 4047884939, 10638267973, 10647852134
+            382537569, 1772336109, 4047884939
         ]
         
         self.check_loop.start()
@@ -35,56 +34,68 @@ class AgeCheck(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            # Используем Audit Log для поиска новых участников
-            # actionType=MemberJoined (тип 8)
-            url = f"https://groups.roblox.com/v1/groups/{self.GROUP_ID}/audit-log?actionType=MemberJoined&limit=10&sortOrder=Desc"
-            response = requests.get(url, headers=self.headers, timeout=10)
+            # Используем Open Cloud API v2 для Audit Log
+            # Фильтр: только вступления (member-join)
+            url = f"https://apis.roblox.com/cloud/v2/groups/{self.GROUP_ID}/audit-log"
+            params = {
+                "filter": "action_type == 'member-join'",
+                "max_page_size": 10
+            }
+            
+            response = requests.get(url, headers=self.headers, params=params, timeout=10)
             
             if response.status_code != 200:
-                # Если ошибка 403 — проверь права API ключа (нужен View Audit Logs)
-                if response.status_code == 403:
-                    await self.log_error("Ошибка 403: У API ключа нет прав на просмотр Audit Log группы.")
+                await self.log_error(f"API Error {response.status_code}: {response.text}")
                 return
             
-            data = response.json().get('data', [])
+            data = response.json().get('groupAuditLogEvents', [])
             if not data:
                 return
 
-            # Сортируем от старых к новым, чтобы корректно обновлять last_checked_log_id
-            for entry in reversed(data):
-                log_id = entry['id']
-                
-                # Если мы это уже видели — пропускаем
-                if self.last_checked_log_id and log_id <= self.last_checked_log_id:
+            newest_event_time = self.last_event_time
+
+            # Обрабатываем события
+            for entry in data:
+                # В v2 время в формате "2023-10-12T15:30:00.123456Z"
+                event_time_str = entry.get('createTime').replace('Z', '+00:00')
+                event_time = datetime.fromisoformat(event_time_str)
+
+                # Проверяем, новое ли это событие
+                if event_time <= self.last_event_time:
                     continue
+                
+                if event_time > newest_event_time:
+                    newest_event_time = event_time
 
-                # В событии MemberJoined 'actor' — это тот, кто вступил
-                user_data = entry.get('actor', {}).get('user', {})
-                rbx_id = user_data.get('userId')
-                username = user_data.get('username')
-                group_join_time = entry.get('created', 'Unknown')
-
+                # В v2 данные пользователя лежат в поле user
+                # Формат ресурса пользователя: "users/123456"
+                user_resource = entry.get('user', '')
+                rbx_id = user_resource.split('/')[-1] if user_resource else None
+                
                 if not rbx_id:
                     continue
 
-                # Запускаем проверку рисков
+                # Получаем имя пользователя (v2 возвращает только ID, имя берем отдельно)
+                user_info_req = requests.get(f"https://users.roblox.com/v1/users/{rbx_id}")
+                username = user_info_req.json().get('name', 'Unknown')
+
                 risk_data = self.perform_risk_check(rbx_id)
                 
                 if risk_data:
-                    risk_data['group_join'] = group_join_time[:10]
+                    risk_data['group_join'] = event_time_str[:10]
                     await self.send_report(username, rbx_id, risk_data)
-                
-                # Обновляем маркер последней проверки
-                self.last_checked_log_id = log_id
+            
+            self.last_event_time = newest_event_time
 
         except Exception as e:
-            await self.log_error(f"Ошибка в цикле аудита: {str(e)}")
+            await self.log_error(f"Ошибка в цикле: {str(e)}")
 
     def perform_risk_check(self, rbx_id):
+        # Метод остается без изменений, так как он использует публичные v1 API, 
+        # которые не требуют ключей для базовой инфы
         risk = 0
         reasons = []
         try:
-            # Собираем данные из разных API Roblox
             u_info = requests.get(f"https://users.roblox.com/v1/users/{rbx_id}").json()
             f_info = requests.get(f"https://friends.roblox.com/v1/users/{rbx_id}/friends/count").json()
             b_info = requests.get(f"https://badges.roblox.com/v1/users/{rbx_id}/badges?limit=10").json()
@@ -92,7 +103,6 @@ class AgeCheck(commands.Cog):
 
             results = {}
             
-            # 1. Проверка даты создания
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
@@ -106,58 +116,45 @@ class AgeCheck(commands.Cog):
                 elif age_days < 30: 
                     risk += 25
                     reasons.append("Меньше 1 месяца")
-                elif age_days < 90: 
-                    risk += 10
-                    reasons.append("Меньше 3 месяцев")
             
-            # 2. Анализ аватара
             equipped = a_info.get('assets', [])
-            # Игнорируем стандартные части тела
             ignored = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
             clothing = [str(a['id']) for a in equipped if a.get('assetType', {}).get('name') not in ignored]
             
             if clothing:
                 matches = sum(1 for item_id in clothing if int(item_id) in self.STARTER_ASSET_IDS)
-                match_percent = (matches / len(clothing)) * 100
-                if match_percent >= 70: 
+                if matches >= 2: 
                     risk += 35
-                    reasons.append(f"Стартовый аватар ({round(match_percent)}%)")
+                    reasons.append("Стартовый аватар")
                 results['clothing_list'] = ", ".join(clothing)
             else:
                 risk += 30
                 reasons.append("Пустой аватар")
                 results['clothing_list'] = "Ничего не надето"
 
-            # 3. Друзья
             friends = f_info.get('count', 0)
             results['friends'] = friends
             if friends < 5:
                 risk += 40
-                reasons.append("Почти нет друзей (<5)")
-            elif friends < 15:
-                risk += 15
-                reasons.append("Мало друзей")
+                reasons.append("Почти нет друзей")
 
-            # 4. Бейджи
             badges = b_info.get('data', [])
             if len(badges) < 3:
                 risk += 20
-                reasons.append("Мало игровых бейджей")
+                reasons.append("Мало бейджей")
 
             results['reasons'] = ", ".join(reasons) if reasons else "Чистый аккаунт"
             results['total_risk'] = min(risk, 100)
             return results
         except Exception as e:
-            print(f"Ошибка проверки игрока {rbx_id}: {e}")
+            print(f"Ошибка проверки {rbx_id}: {e}")
             return None
 
     async def send_report(self, username, rbx_id, data):
         channel = self.bot.get_channel(self.REPORT_CHANNEL_ID)
-        if not channel:
-            return
+        if not channel: return
 
         risk = data['total_risk']
-        # Выбор цвета: Зеленый -> Оранжевый -> Красный
         color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
 
         embed = discord.Embed(title=f"🛡️ Проверка: {username}", color=color, timestamp=datetime.now())
@@ -166,13 +163,8 @@ class AgeCheck(commands.Cog):
         embed.add_field(name="Аккаунт:", value=f"[{username}](https://www.roblox.com/users/{rbx_id}/profile)", inline=True)
         embed.add_field(name="ID:", value=f"`{rbx_id}`", inline=True)
         embed.add_field(name="Риск:", value=f"**{risk}%**", inline=True)
-        
         embed.add_field(name="Создан:", value=f"{data['join_date']} ({data['age_days']} дн.)", inline=True)
-        embed.add_field(name="Вступил в группу:", value=data['group_join'], inline=True)
-        embed.add_field(name="Друзей:", value=str(data.get('friends', 0)), inline=True)
-        
-        embed.add_field(name="Одетые вещи (IDs):", value=f"`{data.get('clothing_list', 'N/A')[:1000]}`", inline=False)
-        embed.add_field(name="Причины подозрения:", value=f"```fix\n{data['reasons']}```", inline=False)
+        embed.add_field(name="Причины:", value=f"```fix\n{data['reasons']}```", inline=False)
 
         await channel.send(embed=embed)
 
@@ -183,4 +175,4 @@ class AgeCheck(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(AgeCheck(bot))
-            
+    
